@@ -14,8 +14,10 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
@@ -62,6 +64,9 @@ func main() {
 	}
 
 	http.Handle(*metricsPath, promhttp.Handler())
+	http.HandleFunc("/probe", func(w http.ResponseWriter, r *http.Request) {
+		probeHandler(w, r)
+	})
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html>
              <head><title>Memcached Exporter</title></head>
@@ -78,4 +83,46 @@ func main() {
 		level.Error(logger).Log("msg", "Error running HTTP server", "err", err)
 		os.Exit(1)
 	}
+}
+
+func probeHandler(w http.ResponseWriter, r *http.Request) {
+	timeoutSeconds := 60.0
+
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutSeconds*float64(time.Second)))
+	defer cancel()
+	r = r.WithContext(ctx)
+
+	probeSuccessGauge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "probe_success",
+		Help: "Displays whether or not the probe was a success",
+	})
+	probeDurationGauge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "probe_duration_seconds",
+		Help: "Returns how long the probe took to complete in seconds",
+	})
+
+	params := r.URL.Query()
+	target := params.Get("target")
+	if target == "" {
+		http.Error(w, "Target parameter is missing", http.StatusBadRequest)
+		return
+	}
+
+	start := time.Now()
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(probeSuccessGauge)
+	registry.MustRegister(probeDurationGauge)
+
+	// success := prober(ctx, target, module, registry, sl)
+	success := true // fake success
+
+	duration := time.Since(start).Seconds()
+	probeDurationGauge.Set(duration)
+
+	if success {
+		probeSuccessGauge.Set(1)
+	}
+
+	h := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+	h.ServeHTTP(w, r)
 }
